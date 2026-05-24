@@ -13,31 +13,40 @@ class ContactsRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ContactsRepository {
 
-    override suspend fun getContacts(): List<Contact> = withContext(Dispatchers.IO) {
-        val contacts = mutableListOf<Contact>()
+    override suspend fun  getContacts(): List<Contact> = withContext(Dispatchers.IO) {
+        val contactsMap = LinkedHashMap<Long, Contact>()
+
+        val selection = "${ContactsContract.RawContacts.ACCOUNT_TYPE} = ?"
+        val selectionArgs = arrayOf("com.google")
 
         context.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            PROJECTION, null, null, "${ContactsContract.Contacts.DISPLAY_NAME} ASC"
+            PROJECTION, selection, selectionArgs, "${ContactsContract.Contacts.DISPLAY_NAME} ASC"
         )?.use { cursor ->
+            val raw = cursor.getColumnIndex(ContactsContract.Data.RAW_CONTACT_ID)
             val idIndex = cursor.getColumnIndex(ContactsContract.Contacts._ID)
             val nameIndex = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
             val phoneIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
             val photoIndex = cursor.getColumnIndex(ContactsContract.Contacts.PHOTO_URI)
 
             while (cursor.moveToNext()) {
-                contacts.add(
-                    Contact(
+                val contactId = cursor.getLong(idIndex)
+                val rawId = cursor.getLong(raw)
+                if (!contactsMap.containsKey(contactId)) {
+                    val contact = Contact(
                         id = cursor.getLong(idIndex),
                         name = parseName(cursor.getString(nameIndex)),
                         surname = parseSurname(cursor.getString(nameIndex)),
                         phoneNumber = cursor.getString(phoneIndex).orEmpty(),
                         photoUri = cursor.getString(photoIndex)
                     )
-                )
+                    contactsMap[contactId] = contact
+                }
+
+
             }
         }
-        contacts
+        contactsMap.values.toList()
     }
 
     private fun parseName(fullName: String?): String = fullName?.split(" ")?.firstOrNull() ?: ""
@@ -46,6 +55,7 @@ class ContactsRepositoryImpl @Inject constructor(
     companion object {
         private val PROJECTION = arrayOf(
             ContactsContract.Contacts._ID,
+            ContactsContract.Data.RAW_CONTACT_ID,
             ContactsContract.Contacts.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NUMBER,
             ContactsContract.Contacts.PHOTO_URI

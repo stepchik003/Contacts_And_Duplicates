@@ -4,13 +4,16 @@ import android.content.ContentResolver
 import android.content.Context
 import coil.ImageLoader
 import com.example.contactsapp.data.repository.ContactsRepositoryImpl
+import com.example.contactsapp.data.service.ContactsDuplicateManager
 import com.example.contactsapp.domain.repository.ContactsRepository
+import com.example.contactsapp.domain.usecases.DeleteDuplicatesUseCase
 import com.example.contactsapp.domain.usecases.GetContactsUseCase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -44,5 +47,20 @@ object AppModule {
         @ApplicationContext context: Context
     ): ContentResolver {
         return context.contentResolver
+    }
+
+    @Provides
+    @Singleton
+    fun provideContactsDuplicateManager(
+        @ApplicationContext context: Context
+    ): ContactsDuplicateManager {
+        return ContactsDuplicateManager(context)
+    }
+
+    @Provides
+    fun provideDeleteDuplicatesUseCase(
+        manager: ContactsDuplicateManager
+    ): DeleteDuplicatesUseCase {
+        return DeleteDuplicatesUseCase(manager)
     }
 }

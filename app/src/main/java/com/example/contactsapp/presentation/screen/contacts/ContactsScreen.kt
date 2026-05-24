@@ -1,7 +1,9 @@
 package com.example.contactsapp.presentation.screen.contacts
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -45,6 +48,12 @@ import com.example.contactsapp.domain.model.Contact
 import com.example.contactsapp.presentation.components.ContactItem
 import com.example.contactsapp.presentation.components.LetterHeader
 import com.example.contactsapp.presentation.components.LoadingIndicator
+import androidx.core.net.toUri
+
+private val REQUIRED_PERMISSIONS = arrayOf(
+    Manifest.permission.READ_CONTACTS,
+    Manifest.permission.WRITE_CONTACTS
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,8 +62,8 @@ fun ContactsScreen(
 ) {
     val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
+
     var showPermissionDialog by remember { mutableStateOf(false) }
-    var shouldRequestPermissions by remember { mutableStateOf(true) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -73,16 +82,8 @@ fun ContactsScreen(
         }
         if (hasPermissions) {
             viewModel.refresh()
-            showPermissionDialog = false
         } else {
-            shouldRequestPermissions = true
-        }
-    }
-
-    if (shouldRequestPermissions) {
-        LaunchedEffect(shouldRequestPermissions) {
             permissionLauncher.launch(REQUIRED_PERMISSIONS)
-            shouldRequestPermissions = false
         }
     }
 
@@ -91,17 +92,38 @@ fun ContactsScreen(
             onDismiss = { showPermissionDialog = false },
             onRequestAgain = {
                 showPermissionDialog = false
-                shouldRequestPermissions = true
+                permissionLauncher.launch(REQUIRED_PERMISSIONS)
             }
         )
     }
+
+    LaunchedEffect(Unit) {
+        viewModel.effect.collect { effect ->
+            when (effect) {
+                is ContactsEvent.ShowMessage -> {
+                    Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
+                }
+                is ContactsEvent.CallContact -> {
+                    val intent = Intent(Intent.ACTION_DIAL).apply {
+                        data = "tel:${effect.phoneNumber}".toUri()
+                    }
+                    if (intent.resolveActivity(context.packageManager) != null) {
+                        context.startActivity(intent)
+                    } else {
+                        Toast.makeText(context, "Нет приложения для звонков", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Contacts") },
                 actions = {
-                    if (state.isLoading) {
+                    if (state is ContactsState.Loading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
                             color = MaterialTheme.colorScheme.onPrimary
@@ -113,29 +135,60 @@ fun ContactsScreen(
                     }
                 }
             )
+        },
+        bottomBar = {
+            if (state is ContactsState.Success) {
+                val successState = state as ContactsState.Success
+                Button(
+                    onClick = { viewModel.onDeleteDuplicatesClicked() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    enabled = !successState.isDeletingDuplicates
+                ) {
+                    if (successState.isDeletingDuplicates) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Удалить одинаковые контакты")
+                    }
+                }
+            }
         }
     ) { padding ->
-        when {
-            state.isLoading -> LoadingIndicator()
-            state.error != null -> ErrorView(
-                error = state.error!!,
-                onRetry = { viewModel.refresh() }
-            )
-            state.shouldShowContent -> ContactList(
-                contacts = state.contacts,
-                onContactClick = { phone ->
-                    viewModel.onContactClick(phone, context)
-                },
-                modifier = Modifier.padding(padding)
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when (val currentState = state) {
+                is ContactsState.Loading -> {
+                    LoadingIndicator()
+                }
+                is ContactsState.Error -> {
+                    ErrorView(
+                        error = currentState.message,
+                        onRetry = {
+                            viewModel.refresh()
+                        }
+                    )
+                }
+                is ContactsState.Success -> {
+                    ContactList(
+                        contacts = currentState.contacts,
+                        onContactClick = { phone ->
+                            viewModel.onContactClick(phone)
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
         }
     }
 }
-
-private val REQUIRED_PERMISSIONS = arrayOf(
-    Manifest.permission.READ_CONTACTS,
-    Manifest.permission.CALL_PHONE
-)
 
 @Composable
 private fun PermissionDeniedDialog(
@@ -144,16 +197,16 @@ private fun PermissionDeniedDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Permissions Required") },
-        text = { Text("Please grant contacts and phone call permissions in settings") },
+        title = { Text("Необходимы разрешения") },
+        text = { Text("Для работы всех функций приложения предоставьте разрешения на чтение и изменение контактов.") },
         confirmButton = {
             Button(onClick = onRequestAgain) {
-                Text("Request Again")
+                Text("Запросить повторно")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("Отмена")
             }
         }
     )
@@ -167,8 +220,13 @@ private fun ContactList(
 ) {
     LazyColumn(modifier = modifier) {
         contacts.forEach { (initial, contactsInGroup) ->
-            item { LetterHeader(initial.toString()) }
-            items(contactsInGroup) { contact ->
+            item(key = "header_$initial") {
+                LetterHeader(initial.toString())
+            }
+            items(
+                items = contactsInGroup,
+                key = { it.id }
+            ) { contact ->
                 ContactItem(
                     contact = contact,
                     onClick = { onContactClick(contact.phoneNumber) }
@@ -198,7 +256,7 @@ private fun ErrorView(
         )
         Spacer(modifier = Modifier.height(16.dp))
         Button(onClick = onRetry) {
-            Text("Retry")
+            Text("Повторить")
         }
     }
 }

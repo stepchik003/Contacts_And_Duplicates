@@ -1,30 +1,31 @@
 package com.example.contactsapp.presentation.screen.contacts
 
-import android.Manifest
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.contactsapp.domain.model.Contact
 import com.example.contactsapp.domain.usecases.GetContactsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import androidx.core.net.toUri
+import com.example.contactsapp.domain.model.DeletionResult
+import com.example.contactsapp.domain.usecases.DeleteDuplicatesUseCase
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 @HiltViewModel
 class ContactsViewModel @Inject constructor(
-    private val getContactsUseCase: GetContactsUseCase
+    private val getContactsUseCase: GetContactsUseCase,
+    private val deleteDuplicatesUseCase: DeleteDuplicatesUseCase
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(ContactsState())
-    val state: StateFlow<ContactsState> = _state.asStateFlow()
+    private val _state = MutableStateFlow<ContactsState>(ContactsState.Loading)
+    val state = _state.asStateFlow()
+
+    private val _effect = MutableSharedFlow<ContactsEvent>()
+    val effect = _effect.asSharedFlow()
 
     init {
         loadContacts()
@@ -36,51 +37,45 @@ class ContactsViewModel @Inject constructor(
 
     private fun loadContacts() {
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true, error = null) }
+            _state.value = ContactsState.Loading
 
             try {
                 val contacts = getContactsUseCase()
-                _state.update {
-                    it.copy(
-                        contacts = contacts.groupByInitial(),
-                        isLoading = false
-                    )
-                }
+                _state.value = ContactsState.Success(contacts.groupByInitial())
             } catch (e: Exception) {
-                _state.update {
-                    it.copy(
-                        isLoading = false,
-                        error = e.message ?: "Failed to load contacts"
-                    )
-                }
+                _state.value = ContactsState.Error("Ошибка загрузки контактов")
             }
         }
     }
 
-    fun onContactClick(phoneNumber: String, context: Context) {
+    fun onContactClick(phoneNumber: String) {
         viewModelScope.launch {
-            try {
-                if (ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.CALL_PHONE
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    val callIntent = Intent(Intent.ACTION_CALL).apply {
-                        data = "tel:$phoneNumber".toUri()
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            _effect.emit(ContactsEvent.CallContact(phoneNumber))
+        }
+    }
+
+    fun onDeleteDuplicatesClicked() {
+        val currentState = _state.value
+        if (currentState is ContactsState.Success) {
+            viewModelScope.launch {
+                _state.value = currentState.copy(isDeletingDuplicates = true)
+
+                deleteDuplicatesUseCase().collect { result ->
+                    when (result) {
+                        DeletionResult.SUCCESS -> {
+                            _effect.emit(ContactsEvent.ShowMessage("Повторяющиеся контакты удалены успешно"))
+                            loadContacts()
+                        }
+                        DeletionResult.NOT_FOUND -> {
+                            _state.value = currentState.copy(isDeletingDuplicates = false)
+                            _effect.emit(ContactsEvent.ShowMessage("Повторяющиеся контакты не найдены"))
+                        }
+                        DeletionResult.ERROR -> {
+                            _state.value = currentState.copy(isDeletingDuplicates = false)
+                            _effect.emit(ContactsEvent.ShowMessage("Произошла ошибка"))
+                        }
                     }
-                    if (callIntent.resolveActivity(context.packageManager) != null) {
-                        context.startActivity(callIntent)
-                    } else {
-                        _state.update { it.copy(error = "No app available to handle calls") }
-                    }
-                } else {
-                    _state.update { it.copy(error = "Call permission not granted") }
                 }
-            } catch (e: SecurityException) {
-                _state.update { it.copy(error = "Call permission denied: ${e.message}") }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "Failed to make call: ${e.message}") }
             }
         }
     }
